@@ -25,6 +25,9 @@ jobs:
           path: build/libvice.a
           key: vice-${{ runner.os }}-${{ hashFiles('ios/build.sh') }}
 
+      - name: Test the WiFi packets
+        run: cc -std=gnu11 -Wall -Wextra -I src tests/netcodec_test.c src/netcodec.c -o /tmp/netcodec_test && /tmp/netcodec_test
+
       - name: Build
         run: VERSION=0.1 BUILD=${{ github.run_number }} ios/build.sh
 

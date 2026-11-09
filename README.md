@@ -12,10 +12,24 @@ This app is built with AI assistance.
 
 ## Status
 
-- **v0.1 (now):** one phone. The C64 runs the game full screen with touch
-  controls. Player 1 is joystick port 1.
-- **Next:** two phones. One hosts the game, the other joins from a list of
-  nearby phones and plays as player 2 (port 2). No internet needed.
+- **One phone:** the C64 runs the game full screen with touch controls.
+  Player 1 is joystick port 1.
+- **Two phones (new, not yet tried on real phones):** open a game on phone
+  1; on phone 2 tap *Join a friend* and pick it. Phone 2 is player 2
+  (port 2): it shows phone 1's picture, plays its sound and sends its
+  stick, fire and keys back. No internet needed; the same WiFi is best.
+
+## How two phones play
+
+Phone 1 runs the C64. Every picture is packed as a 16-colour palette with
+4-bit pixels, LZ4-compressed, cut into 1100-byte UDP packets and sent to
+phone 2; unchanged pictures are only resent every 10 frames. Sound goes as
+mono 16-bit samples. Phone 2 sends its whole input state 30 times a second
+plus on every change, so a lost packet never leaves a key stuck. Either
+side counts the other as gone after 3 seconds of silence. Packet formats:
+`src/netcodec.h` (tested by `tests/netcodec_test.c`, run in CI). The
+networking is `ios/Net.m` (Network framework, Bonjour `_c64wif._udp`,
+peer-to-peer WiFi allowed).
 
 ## Controls
 

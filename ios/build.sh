@@ -50,13 +50,14 @@ APP="$OUT/Payload/C64wifFriends.app"
 rm -rf "$OUT/Payload" "$OUT/obj"
 mkdir -p "$APP" "$OUT/obj"
 $CC -O2 -std=gnu11 -Wall -I"$ROOT/src" -c "$ROOT/src/frontend.c" -o "$OUT/obj/frontend.o"
-for m in main TouchOverlay; do
+$CC -O2 -std=gnu11 -Wall -I"$ROOT/src" -c "$ROOT/src/netcodec.c" -o "$OUT/obj/netcodec.o"
+for m in main TouchOverlay Net; do
    $CC -O2 -fobjc-arc -fmodules -Wall -I"$ROOT/src" -I"$ROOT/ios" -c "$ROOT/ios/$m.m" -o "$OUT/obj/$m.o"
 done
 $CC -o "$APP/C64wifFriends" "$OUT"/obj/*.o "$OUT/libvice.a" \
    -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics \
-   -framework AVFoundation -framework AudioToolbox -framework UniformTypeIdentifiers \
-   -lc++ -lz -dead_strip
+   -framework AVFoundation -framework AudioToolbox -framework UniformTypeIdentifiers -framework Network \
+   -lc++ -lz -lcompression -dead_strip
 
 sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD/" "$ROOT/ios/Info.plist" > "$APP/Info.plist"
 plutil -lint "$APP/Info.plist"

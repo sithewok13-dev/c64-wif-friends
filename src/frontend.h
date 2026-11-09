@@ -60,6 +60,14 @@ bool fe_copy_frame(uint32_t *dst, unsigned *w, unsigned *h, uint64_t *seq);
 size_t fe_audio_read(int16_t *out, size_t frames);
 size_t fe_audio_buffered(void); /* frames waiting */
 
+/* WiFi play. The host taps the sound as it is made (emulator thread). */
+typedef void (*fe_audio_tap_t)(const int16_t *stereo, size_t frames, void *user);
+void fe_set_audio_tap(fe_audio_tap_t tap, void *user);
+/* The guest runs no C64: it feeds in what the host sends, and the screen
+ * and sound code read it back with fe_copy_frame() / fe_audio_read(). */
+void fe_push_frame(const uint32_t *px, unsigned w, unsigned h, float aspect);
+void fe_push_audio(const int16_t *stereo, size_t frames, double rate);
+
 void fe_log(const char *fmt, ...);
 
 #endif

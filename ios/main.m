@@ -9,6 +9,7 @@
 #include <mach/mach_time.h>
 #include <pthread.h>
 #import "TouchOverlay.h"
+#import "Net.h"
 #include "frontend.h"
 
 static NSString *DocumentsDir(void) {
@@ -32,7 +33,8 @@ static NSString *AppVersion(void);
 #pragma mark - The C64 screen
 
 @interface GameViewController : UIViewController
-- (instancetype)initWithGamePath:(NSString *)path;
+- (instancetype)initWithGamePath:(NSString *)path;          // player 1: runs the C64
+- (instancetype)initWithGuest:(NetGuest *)guest;            // player 2: shows player 1's C64
 @end
 
 @implementation GameViewController {
@@ -50,11 +52,24 @@ static NSString *AppVersion(void);
    AudioComponentInstance _audio;
    UILabel *_message;
    float _laidOutAspect;
+   NetHost *_host;
+   NetGuest *_guest;
+   UILabel *_toast;
+   NSUInteger _toastId;
 }
 
 - (instancetype)initWithGamePath:(NSString *)path {
    if ((self = [super initWithNibName:nil bundle:nil])) {
       _path = [path copy];
+      _pixels = calloc(FE_MAX_W * FE_MAX_H, 4);
+      self.modalPresentationStyle = UIModalPresentationFullScreen;
+   }
+   return self;
+}
+
+- (instancetype)initWithGuest:(NetGuest *)guest {
+   if ((self = [super initWithNibName:nil bundle:nil])) {
+      _guest = guest;
       _pixels = calloc(FE_MAX_W * FE_MAX_H, 4);
       self.modalPresentationStyle = UIModalPresentationFullScreen;
    }
@@ -79,16 +94,46 @@ static NSString *AppVersion(void);
    _message.font = [UIFont monospacedSystemFontOfSize:15 weight:UIFontWeightSemibold];
    _message.numberOfLines = 0;
    _message.textAlignment = NSTextAlignmentCenter;
-   _message.text = @"LOADING...";
+   _message.text = _guest ? @"JOINING..." : @"LOADING...";
    [self.view addSubview:_message];
 
    _overlay = [[TouchOverlay alloc] initWithFrame:self.view.bounds];
    _overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-   _overlay.onJoy = ^(uint32_t bits) { fe_set_joy(0, bits); };
-   _overlay.onKey = ^(unsigned code, BOOL down) { fe_key(code, down); };
+   if (_guest) {
+      NetGuest *g = _guest;
+      _overlay.onJoy = ^(uint32_t bits) { [g setJoy:bits]; };
+      _overlay.onKey = ^(unsigned code, BOOL down) { [g key:code down:down]; };
+   } else {
+      _overlay.onJoy = ^(uint32_t bits) { fe_set_joy(0, bits); };
+      _overlay.onKey = ^(unsigned code, BOOL down) { fe_key(code, down); };
+   }
    __weak typeof(self) weakSelf = self;
    _overlay.onMenu = ^{ [weakSelf showMenu]; };
    [self.view addSubview:_overlay];
+
+   _toast = [UILabel new];
+   _toast.textColor = UIColor.whiteColor;
+   _toast.backgroundColor = [UIColor colorWithRed:0.05 green:0.04 blue:0.14 alpha:0.85];
+   _toast.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+   _toast.textAlignment = NSTextAlignmentCenter;
+   _toast.numberOfLines = 2;
+   _toast.layer.cornerRadius = 10;
+   _toast.layer.masksToBounds = YES;
+   _toast.alpha = 0;
+   _toast.userInteractionEnabled = NO;
+   [self.view addSubview:_toast];
+
+   if (_guest) {
+      _guest.onStatus = ^(NSString *text, BOOL lost) {
+         typeof(self) s = weakSelf;
+         if (!s) return;
+         [s showToast:text];
+         if (lost) {
+            s->_message.text = [text stringByAppendingString:@"\n\nMENU > Leave"];
+            s->_message.hidden = NO;
+         }
+      };
+   }
 
    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
    [nc addObserver:self selector:@selector(goBackground) name:UIApplicationWillResignActiveNotification object:nil];
@@ -114,20 +159,41 @@ static NSString *AppVersion(void);
    _message.frame = CGRectInset(_screen.frame, 24, 24);
    _overlay.compact = landscape;
    _overlay.pictureFrame = _screen.frame;
+   CGFloat tw = MIN(b.width - 40, 420);
+   _toast.frame = CGRectMake((b.width - tw) / 2, CGRectGetMaxY(_screen.frame) - 64, tw, 48);
+}
+
+- (void)showToast:(NSString *)text {
+   NSUInteger me = ++_toastId;
+   _toast.text = text;
+   [self.view bringSubviewToFront:_toast];
+   [UIView animateWithDuration:0.2 animations:^{ self->_toast.alpha = 1; }];
+   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+      if (me == self->_toastId) [UIView animateWithDuration:0.4 animations:^{ self->_toast.alpha = 0; }];
+   });
 }
 
 - (void)viewDidAppear:(BOOL)animated {
    [super viewDidAppear:animated];
    if (_link) return;
    [UIApplication sharedApplication].idleTimerDisabled = YES;
-   pthread_create(&_thread, NULL, EmuThread, (__bridge void *)self);
+   if (!_guest) {
+      // Player 2 can join any game: offer it on the WiFi straight away.
+      _host = [[NetHost alloc] initWithGameName:_path.lastPathComponent];
+      __weak typeof(self) weakSelf = self;
+      _host.onStatus = ^(NSString *text) { [weakSelf showToast:text]; };
+      [self showToast:_host.statusText];
+      pthread_create(&_thread, NULL, EmuThread, (__bridge void *)self);
+   }
    _link = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick)];
    [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 
 - (void)tick {
    unsigned w, h;
+   if (_guest && !_audio && fe_audio_buffered() > 0) [self startAudio];   // player 1's sound has arrived
    if (!fe_copy_frame(_pixels, &w, &h, &_seq)) return;
+   if (_guest) _started = YES;
    if (!_message.hidden) { _message.hidden = YES; [self.view setNeedsLayout]; }
    if (fabsf(fe_aspect() - _laidOutAspect) > 0.01f) [self.view setNeedsLayout];   // border on/off
    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
@@ -175,11 +241,13 @@ static void *EmuThread(void *arg) {
       if (fe_fast_forward()) {
          // VICE is loading: run flat out, a few frames per screen refresh.
          for (int i = 0; i < 8 && fe_fast_forward(); i++) fe_run_frame();
+         [_host afterFrame];
          usleep(2000);
          next = mach_absolute_time();
          continue;
       }
       fe_run_frame();
+      [_host afterFrame];   // player 2's picture and sound
       // Keep about 60 ms of sound queued: run a touch slower or faster.
       double queued = fe_audio_buffered() / sampleRate;
       double adjust = queued > 0.09 ? 1.02 : (queued < 0.03 ? 0.98 : 1.0);
@@ -237,8 +305,19 @@ static OSStatus AudioRender(void *ref, AudioUnitRenderActionFlags *flags, const 
 #pragma mark Menu
 
 - (void)showMenu {
+   if (_guest) {
+      UIAlertController *g = [UIAlertController alertControllerWithTitle:@"C64 wif Friends"
+         message:[NSString stringWithFormat:@"Player 2 in %@\n%@", _guest.name, AppVersion()]
+         preferredStyle:UIAlertControllerStyleAlert];
+      [g addAction:[UIAlertAction actionWithTitle:@"Leave" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
+         [self leave];
+      }]];
+      [g addAction:[UIAlertAction actionWithTitle:@"Back to the game" style:UIAlertActionStyleCancel handler:nil]];
+      [self presentViewController:g animated:YES completion:nil];
+      return;
+   }
    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"C64 wif Friends"
-      message:[NSString stringWithFormat:@"%@\n%@", _path.lastPathComponent, AppVersion()]
+      message:[NSString stringWithFormat:@"%@\n%@\n%@", _path.lastPathComponent, _host.statusText, AppVersion()]
       preferredStyle:UIAlertControllerStyleAlert];
    [a addAction:[UIAlertAction actionWithTitle:@"Reset the C64" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
       self->_resetRequested = YES;
@@ -260,10 +339,90 @@ static OSStatus AudioRender(void *ref, AudioUnitRenderActionFlags *flags, const 
    [self presentViewController:a animated:YES completion:nil];
 }
 
+- (void)leave {
+   [_guest stop];
+   [_link invalidate];
+   _link = nil;
+   if (_audio) {
+      AudioOutputUnitStop(_audio);
+      AudioComponentInstanceDispose(_audio);
+      _audio = NULL;
+   }
+   [UIApplication sharedApplication].idleTimerDisabled = NO;
+   [self dismissViewControllerAnimated:YES completion:nil];
+}
+
 static NSString *AppVersion(void) {
    NSDictionary *i = NSBundle.mainBundle.infoDictionary;
    NSString *v = i[@"CFBundleShortVersionString"], *b = i[@"CFBundleVersion"];
    return [b isEqualToString:v] ? [NSString stringWithFormat:@"v%@", v] : [NSString stringWithFormat:@"v%@ (%@)", v, b];
+}
+
+@end
+
+#pragma mark - Join a friend
+
+@interface JoinViewController : UITableViewController
+@end
+
+@implementation JoinViewController {
+   NetBrowser *_browser;
+   NSArray<NSString *> *_names;
+   NSString *_problem;
+}
+
+- (void)viewDidLoad {
+   [super viewDidLoad];
+   self.title = @"Join a friend";
+   self.tableView.backgroundColor = C64Blue();
+   self.tableView.separatorColor = C64Light();
+   _names = @[];
+   _browser = [NetBrowser new];
+   __weak typeof(self) weakSelf = self;
+   _browser.onChange = ^(NSArray<NSString *> *names, NSString *problem) {
+      typeof(self) s = weakSelf;
+      if (!s) return;
+      s->_names = names;
+      s->_problem = problem;
+      [s.tableView reloadData];
+   };
+}
+
+- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [_browser start]; }
+- (void)viewDidDisappear:(BOOL)animated { [super viewDidDisappear:animated]; [_browser stop]; }
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return MAX(1, (NSInteger)_names.count); }
+
+- (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
+   NSString *help = @"On player 1's phone, open a game in C64 wif Friends. It shows up here; tap it to play as player 2. "
+                    "Both phones need WiFi turned on, close to each other (the same WiFi network is best, but no internet is needed).";
+   return _problem.length ? [NSString stringWithFormat:@"%@\n\n%@", _problem, help] : help;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+   UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"j"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"j"];
+   c.backgroundColor = C64Blue();
+   c.textLabel.font = [UIFont monospacedSystemFontOfSize:17 weight:UIFontWeightSemibold];
+   if (_names.count == 0) {
+      c.textLabel.text = @"Looking for player 1...";
+      c.textLabel.textColor = C64Light();
+      c.selectionStyle = UITableViewCellSelectionStyleNone;
+   } else {
+      c.textLabel.text = _names[ip.row];
+      c.textLabel.textColor = UIColor.whiteColor;
+      c.selectionStyle = UITableViewCellSelectionStyleDefault;
+   }
+   return c;
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+   [tv deselectRowAtIndexPath:ip animated:YES];
+   if (_names.count == 0) return;
+   NSString *name = _names[ip.row];
+   nw_endpoint_t ep = [_browser endpointForName:name];
+   if (!ep) return;
+   NetGuest *g = [[NetGuest alloc] initWithEndpoint:ep name:name];
+   [self presentViewController:[[GameViewController alloc] initWithGuest:g] animated:YES completion:nil];
 }
 
 @end
@@ -284,6 +443,8 @@ static NSString *AppVersion(void) {
    self.title = @"C64 wif Friends";
    self.tableView.backgroundColor = C64Blue();
    self.tableView.separatorColor = C64Light();
+   self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Join a friend"
+      style:UIBarButtonItemStylePlain target:self action:@selector(join)];
    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Add game"
       style:UIBarButtonItemStylePlain target:self action:@selector(addGame)];
    [self reload];
@@ -306,7 +467,8 @@ static NSString *AppVersion(void) {
 
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
    return [NSString stringWithFormat:@"Tap Add game to pick a disk (.d64), tape (.t64, .tap), program (.prg) or cartridge (.crt) from Files. "
-           "Games are kept in Files > On My iPhone > C64 wif Friends.\n\n%@", AppVersion()];
+           "Games are kept in Files > On My iPhone > C64 wif Friends.\n\n"
+           "Two players: open a game here, then on the other phone tap Join a friend.\n\n%@", AppVersion()];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
@@ -338,6 +500,10 @@ static NSString *AppVersion(void) {
    if (st != UITableViewCellEditingStyleDelete) return;
    [NSFileManager.defaultManager removeItemAtPath:[DocumentsDir() stringByAppendingPathComponent:_games[ip.row]] error:nil];
    [self reload];
+}
+
+- (void)join {
+   [self.navigationController pushViewController:[JoinViewController new] animated:YES];
 }
 
 - (void)addGame {

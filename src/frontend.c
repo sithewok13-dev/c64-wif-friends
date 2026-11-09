@@ -244,10 +244,16 @@ static size_t s_rhead, s_rtail;   /* in frames; head = write */
 static pthread_mutex_t s_audio_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool s_ff;                  /* fast-forward (warp) requested by the core */
 
+static fe_audio_tap_t s_tap;
+static void *s_tap_user;
+
+void fe_set_audio_tap(fe_audio_tap_t tap, void *user) { s_tap_user = user; s_tap = tap; }
+
 static size_t audio_batch(const int16_t *data, size_t frames)
 {
    size_t i;
    if (s_ff) return frames;        /* warp: no sound, as on a real VICE */
+   if (s_tap) s_tap(data, frames, s_tap_user);
    pthread_mutex_lock(&s_audio_lock);
    for (i = 0; i < frames; i++) {
       size_t next = (s_rhead + 1) % RING_FRAMES;
@@ -291,6 +297,35 @@ size_t fe_audio_buffered(void)
 }
 
 bool fe_fast_forward(void) { return s_ff; }
+
+/* ---- Guest side: pictures and sound from the host ---- */
+void fe_push_frame(const uint32_t *px, unsigned w, unsigned h, float aspect)
+{
+   if (w > FE_MAX_W || h > FE_MAX_H) return;
+   pthread_mutex_lock(&s_video_lock);
+   memcpy(s_frame, px, (size_t)w * h * 4);
+   s_fw = w;
+   s_fh = h;
+   s_fseq++;
+   s_av.geometry.aspect_ratio = aspect;
+   s_av.geometry.base_width = w;
+   s_av.geometry.base_height = h;
+   pthread_mutex_unlock(&s_video_lock);
+}
+
+void fe_push_audio(const int16_t *stereo, size_t frames, double rate)
+{
+   size_t max_queued = (size_t)(rate * 0.25), keep = (size_t)(rate * 0.08), queued;
+   s_av.timing.sample_rate = rate;
+   audio_batch(stereo, frames);
+   /* The two phones' clocks drift apart; never let the delay build up. */
+   queued = fe_audio_buffered();
+   if (queued > max_queued) {
+      pthread_mutex_lock(&s_audio_lock);
+      s_rtail = (s_rtail + (queued - keep)) % RING_FRAMES;
+      pthread_mutex_unlock(&s_audio_lock);
+   }
+}
 
 /* ------------------------------------------------------------------ */
 /* Input */
