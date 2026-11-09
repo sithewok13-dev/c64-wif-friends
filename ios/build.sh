@@ -22,6 +22,10 @@ if [ ! -f "$OUT/libvice.a" ]; then
    git init -q "$OUT/vice-libretro"
    git -C "$OUT/vice-libretro" fetch -q --depth 1 "$VICE_REPO" "$VICE_COMMIT"
    git -C "$OUT/vice-libretro" checkout -q FETCH_HEAD
+   # zlib's old classic-Mac check also fires on iOS and breaks the SDK's
+   # own fdopen() declaration.
+   sed -i '' 's/#if defined(MACOS) || defined(TARGET_OS_MAC)/#if defined(MACOS)/' \
+      "$OUT/vice-libretro/deps/libz/zutil.h"
    echo "Building VICE (log: build/vice-build.log)..."
    # The makefile links a .dylib at the end; we only need the objects.
    if ! make -C "$OUT/vice-libretro" -j"$(sysctl -n hw.ncpu)" EMUTYPE=x64sc platform=ios-arm64 \
@@ -29,6 +33,10 @@ if [ ! -f "$OUT/libvice.a" ]; then
       echo "::warning::VICE's own make step failed; last lines:"
       grep -E "error|Error" "$OUT/vice-build.log" | tail -40 || true
       tail -20 "$OUT/vice-build.log"
+      # Only the final .dylib link may fail; any compile error is fatal.
+      if grep -q "Error 1" "$OUT/vice-build.log" && ! grep -q "_libretro_ios.dylib\] Error" "$OUT/vice-build.log"; then
+         echo "::error::VICE failed to compile"; exit 1
+      fi
    fi
    find "$OUT/vice-libretro/build" -name '*.o' > "$OUT/vice-objects.txt"
    echo "VICE objects: $(wc -l < "$OUT/vice-objects.txt")"
