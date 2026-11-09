@@ -22,9 +22,14 @@ This app is built with AI assistance.
 - **Left thumb:** a joystick appears where your thumb lands (left side of
   the screen). 8 directions.
 - **Right thumb:** FIRE (anywhere on the right side fires).
-- **Top row:** F1, F3, F5, F7, SPACE, RETURN, STOP (RUN/STOP), held while
-  your finger is down; **ABC** opens letters, digits, C=, comma and full
-  stop (for questions like "Y/N?"); **MENU** resets the C64.
+- **Portrait:** the picture fills the width at the top. Under it: F1, F3,
+  F5, F7, SPACE, RETURN, STOP (RUN/STOP), held while your finger is down;
+  **ABC** opens letters, digits, C=, comma and full stop (for questions
+  like "Y/N?"); **MENU**.
+- **Landscape:** the picture fills the height. **KEYS** (top right) opens
+  the F-keys, SPACE, RETURN, STOP and the letters; **MENU** sits under it.
+- **MENU:** reset the C64, or show/hide the C64's border. It's hidden by
+  default, so the game itself is as big as the screen allows.
 - Every press lasts at least 5 frames, so a quick tap always counts.
 
 ## Install

@@ -30,7 +30,7 @@ typedef NS_ENUM(NSInteger, BtnKind) { BtnHeld, BtnTap, BtnABC, BtnMenu };
 @end
 
 @implementation TouchOverlay {
-   NSMutableArray<OverlayButton *> *_top, *_tray;
+   NSMutableArray<OverlayButton *> *_top, *_corner, *_trayFn, *_tray;
    UITouch *_stickTouch;
    CGPoint _stickCenter, _stickPos;
    uint32_t _stickBits;
@@ -60,6 +60,12 @@ static OverlayButton *Btn(NSString *label, unsigned code, BtnKind kind) {
                  Btn(@"SPACE", RETROK_SPACE, BtnHeld), Btn(@"RETURN", RETROK_RETURN, BtnHeld),
                  Btn(@"STOP", RETROK_ESCAPE, BtnHeld), Btn(@"ABC", 0, BtnABC),
                  Btn(@"MENU", 0, BtnMenu) ] mutableCopy];
+      _corner = [@[ Btn(@"KEYS", 0, BtnABC), Btn(@"MENU", 0, BtnMenu) ] mutableCopy];
+      _trayFn = [@[ Btn(@"F1", RETROK_F1, BtnHeld), Btn(@"F3", RETROK_F3, BtnHeld),
+                    Btn(@"F5", RETROK_F5, BtnHeld), Btn(@"F7", RETROK_F7, BtnHeld),
+                    Btn(@"SPACE", RETROK_SPACE, BtnHeld), Btn(@"RETURN", RETROK_RETURN, BtnHeld),
+                    Btn(@"STOP", RETROK_ESCAPE, BtnHeld) ] mutableCopy];
+      for (OverlayButton *b in _trayFn) b.inTray = YES;
       _tray = [NSMutableArray array];
       NSArray *rows = @[ @"1234567890", @"QWERTYUIOP", @"ASDFGHJKL", @"#ZXCVBNM,." ];
       for (NSString *row in rows) {
@@ -88,36 +94,90 @@ static OverlayButton *Btn(NSString *label, unsigned code, BtnKind kind) {
                       z.height - MAX(s.bottom, 8) - kFireMargin - kFireRadius);
 }
 
+- (NSArray<OverlayButton *> *)visibleKeys { return _compact ? _corner : _top; }
+
+- (NSArray<OverlayButton *> *)trayKeys {
+   return _compact ? [_trayFn arrayByAddingObjectsFromArray:_tray] : _tray;
+}
+
+- (void)setPictureFrame:(CGRect)f { _pictureFrame = f; [self setNeedsLayout]; }
+
+- (void)setCompact:(BOOL)c {
+   if (c == _compact) return;
+   // Let go of anything held on the buttons that are about to disappear.
+   for (UITouch *t in [[_buttonTouches keyEnumerator] allObjects]) [self releaseButtonForTouch:t inside:NO];
+   _compact = c;
+   _trayOpen = NO;
+   for (OverlayButton *b in _top) b.lit = NO;
+   for (OverlayButton *b in _corner) b.lit = NO;
+   [self setNeedsLayout];
+}
+
 - (void)layoutSubviews {
    [super layoutSubviews];
    UIEdgeInsets s = self.safeAreaInsets;
-   CGFloat right = self.bounds.size.width - MAX(s.right, 12);
-   CGFloat top = MAX(s.top, 8);
+   CGSize z = self.bounds.size;
    UIFont *font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightBold];
-   // Top row, right-aligned, wrapping to a second row on narrow screens.
-   CGFloat x = right, y = top;
-   CGFloat leftLimit = self.bounds.size.width * 0.30;
-   for (OverlayButton *b in _top.reverseObjectEnumerator) {
-      CGFloat w = MAX(42, [b.label sizeWithAttributes:@{NSFontAttributeName: font}].width + 16);
-      if (x - w < leftLimit) { x = right; y += kKeyH + kKeyGap; }
-      b.frame = CGRectMake(x - w, y, w, kKeyH);
-      x -= w + kKeyGap;
+   CGFloat (^widthOf)(OverlayButton *) = ^CGFloat(OverlayButton *b) {
+      return MAX(42, [b.label sizeWithAttributes:@{NSFontAttributeName: font}].width + 16);
+   };
+   if (_compact) {
+      // Landscape: KEYS over MENU, top right, in the space beside the picture.
+      CGFloat w = 64, x = z.width - MAX(s.right, 8) - 8 - w, y = MAX(s.top, 8);
+      for (OverlayButton *b in _corner) {
+         b.frame = CGRectMake(x, y, w, kKeyH);
+         y += kKeyH + kKeyGap;
+      }
+   } else {
+      // Portrait: one centred row (wrapping) just under the picture.
+      CGFloat left = MAX(s.left, 8), right = z.width - MAX(s.right, 8);
+      CGFloat y = CGRectIsEmpty(_pictureFrame) ? MAX(s.top, 8) : CGRectGetMaxY(_pictureFrame) + 10;
+      NSMutableArray<NSArray<OverlayButton *> *> *rows = [NSMutableArray array];
+      NSMutableArray *row = [NSMutableArray array];
+      CGFloat rowW = 0;
+      for (OverlayButton *b in _top) {
+         CGFloat w = widthOf(b);
+         if (row.count && rowW + kKeyGap + w > right - left) { [rows addObject:row]; row = [NSMutableArray array]; rowW = 0; }
+         rowW += (row.count ? kKeyGap : 0) + w;
+         [row addObject:b];
+      }
+      if (row.count) [rows addObject:row];
+      for (NSArray<OverlayButton *> *r in rows) {
+         CGFloat total = 0;
+         for (OverlayButton *b in r) total += widthOf(b);
+         total += kKeyGap * (r.count - 1);
+         CGFloat x = (z.width - total) / 2;
+         for (OverlayButton *b in r) {
+            CGFloat w = widthOf(b);
+            b.frame = CGRectMake(x, y, w, kKeyH);
+            x += w + kKeyGap;
+         }
+         y += kKeyH + kKeyGap;
+      }
    }
-   // The ABC tray: four rows at the bottom middle.
+   // The tray at the bottom middle: in landscape a row of F-keys etc. on top.
    CGFloat kw = 34, kh = 36, gap = 5, pad = 8;
-   NSArray<NSNumber *> *counts = @[ @10, @10, @9, @10 ];
    CGFloat trayW = 10 * kw + 9 * gap + 2 * pad;
-   CGFloat trayH = 4 * kh + 3 * gap + 2 * pad;
-   CGFloat tx = (self.bounds.size.width - trayW) / 2;
-   CGFloat ty = self.bounds.size.height - MAX(s.bottom, 8) - 6 - trayH;
+   NSInteger fnRows = _compact ? 1 : 0;
+   CGFloat trayH = (4 + fnRows) * kh + (3 + fnRows) * gap + 2 * pad;
+   CGFloat tx = (z.width - trayW) / 2;
+   CGFloat ty = z.height - MAX(s.bottom, 8) - 6 - trayH;
    _trayRect = CGRectMake(tx, ty, trayW, trayH);
+   CGFloat ry = ty + pad;
+   if (_compact) {
+      CGFloat fw = (trayW - 2 * pad - 6 * gap) / 7;
+      for (NSUInteger i = 0; i < _trayFn.count; i++)
+         _trayFn[i].frame = CGRectMake(tx + pad + i * (fw + gap), ry, fw, kh);
+      ry += kh + gap;
+   }
+   NSArray<NSNumber *> *counts = @[ @10, @10, @9, @10 ];
    NSUInteger idx = 0;
    for (NSUInteger r = 0; r < counts.count; r++) {
       NSInteger n = counts[r].integerValue;
       CGFloat rowW = n * kw + (n - 1) * gap;
       CGFloat rx = tx + (trayW - rowW) / 2;
       for (NSInteger i = 0; i < n; i++, idx++)
-         _tray[idx].frame = CGRectMake(rx + i * (kw + gap), ty + pad + r * (kh + gap), kw, kh);
+         _tray[idx].frame = CGRectMake(rx + i * (kw + gap), ry + r * (kh + gap), kw, kh);
    }
    [self setNeedsDisplay];
 }
@@ -173,11 +233,13 @@ static OverlayButton *Btn(NSString *label, unsigned code, BtnKind kind) {
    CGSize fs = [@"FIRE" sizeWithAttributes:fa];
    [@"FIRE" drawAtPoint:CGPointMake(f.x - fs.width / 2, f.y - fs.height / 2) withAttributes:fa];
    // Keys
-   for (OverlayButton *b in _top) [self drawButton:b font:font];
+   for (OverlayButton *b in [self visibleKeys]) [self drawButton:b font:font];
    if (_trayOpen) {
       UIBezierPath *bg = [UIBezierPath bezierPathWithRoundedRect:_trayRect cornerRadius:12];
       [[UIColor colorWithRed:0.05 green:0.04 blue:0.14 alpha:0.9] setFill];
       [bg fill];
+      UIFont *small = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightBold];
+      for (OverlayButton *b in _trayFn) if (_compact) [self drawButton:b font:small];
       for (OverlayButton *b in _tray) [self drawButton:b font:font];
    }
 }
@@ -188,7 +250,7 @@ static OverlayButton *Btn(NSString *label, unsigned code, BtnKind kind) {
    // Nearest button within the forgiveness margin wins.
    OverlayButton *best = nil;
    CGFloat bestD = CGFLOAT_MAX;
-   NSArray *all = _trayOpen ? [_tray arrayByAddingObjectsFromArray:_top] : _top;
+   NSArray *all = _trayOpen ? [[self trayKeys] arrayByAddingObjectsFromArray:[self visibleKeys]] : [self visibleKeys];
    for (OverlayButton *b in all) {
       CGRect r = CGRectInset(b.frame, -kSlop, -kSlop);
       if (!CGRectContainsPoint(r, p)) continue;

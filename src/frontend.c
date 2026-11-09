@@ -18,6 +18,7 @@ static const char *const k_overrides[][2] = {
    { "vice_drive_true_emulation", "enabled" },
    { "vice_statusbar",            "disabled" },
    { "vice_statusbar_startup",    "disabled" },
+   { "vice_crop",                 "maximum" },  /* no plain border: a bigger game picture */
    /* We only ever press fire and directions on the pads; keys come in as
     * real key presses, so no pad button needs a mapping. */
    { "vice_mapper_select", "---" }, { "vice_mapper_start", "---" },
@@ -97,10 +98,36 @@ static void opt_set(const char *key, const char *value)
    }
 }
 
+/* Settings changed while running (fe_set_option); they win over the rest. */
+#define MAX_LIVE 16
+static pthread_mutex_t s_opt_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { char key[64]; char value[64]; } s_live[MAX_LIVE];
+static int s_nlive;
+
+void fe_set_option(const char *key, const char *value)
+{
+   int i;
+   pthread_mutex_lock(&s_opt_lock);
+   for (i = 0; i < s_nlive && strcmp(s_live[i].key, key); i++) { }
+   if (i < MAX_LIVE) {
+      snprintf(s_live[i].key, sizeof(s_live[i].key), "%s", key);
+      snprintf(s_live[i].value, sizeof(s_live[i].value), "%s", value);
+      if (i == s_nlive) s_nlive++;
+      s_opts_dirty = true;
+   }
+   pthread_mutex_unlock(&s_opt_lock);
+}
+
 static const char *opt_get(const char *key)
 {
    int i;
    size_t j;
+   const char *live = NULL;
+   pthread_mutex_lock(&s_opt_lock);
+   for (i = 0; i < s_nlive; i++)
+      if (!strcmp(s_live[i].key, key)) live = s_live[i].value;   /* entries are never removed */
+   pthread_mutex_unlock(&s_opt_lock);
+   if (live) return live;
    for (j = 0; j < sizeof(k_overrides) / sizeof(k_overrides[0]); j++)
       if (!strcmp(k_overrides[j][0], key)) return k_overrides[j][1];
    for (i = 0; i < s_nopts; i++)
@@ -415,8 +442,10 @@ static bool environment(unsigned cmd, void *data)
       return true;
    }
    case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
+      pthread_mutex_lock(&s_opt_lock);
       *(bool *)data = s_opts_dirty;
       s_opts_dirty = false;
+      pthread_mutex_unlock(&s_opt_lock);
       return true;
    case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY:
    case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK:

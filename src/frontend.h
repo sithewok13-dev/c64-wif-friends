@@ -45,6 +45,10 @@ bool   fe_fast_forward(void);  /* VICE asks for warp while it loads */
 void fe_set_joy(int player, uint32_t bits);
 void fe_key(unsigned retrok, bool down);      /* a libretro RETROK_* code */
 
+/* Changes a VICE setting (any thread). Before fe_start() it applies from
+ * boot; later, VICE picks it up before the next frame. */
+void fe_set_option(const char *key, const char *value);
+
 /* Copies the newest picture (XRGB8888, little-endian) into dst if it has
  * changed since *seq. dst must hold 512*320 pixels. Returns true if copied. */
 #define FE_MAX_W 512

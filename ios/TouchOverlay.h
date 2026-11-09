@@ -11,6 +11,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^onKey)(unsigned retrok, BOOL down);
 // The MENU key was tapped.
 @property (nonatomic, copy, nullable) void (^onMenu)(void);
+// Where the C64 picture is. In portrait the keys go in a row under it; in
+// landscape (compact) they fold into KEYS and MENU in the side space.
+@property (nonatomic) CGRect pictureFrame;
+@property (nonatomic) BOOL compact;
 @end
 
 NS_ASSUME_NONNULL_END

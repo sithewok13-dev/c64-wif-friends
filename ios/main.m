@@ -19,6 +19,10 @@ static NSArray<NSString *> *GameExtensions(void) {
    return @[ @"d64", @"d71", @"d81", @"g64", @"t64", @"tap", @"prg", @"p00", @"crt", @"zip", @"7z", @"gz", @"m3u" ];
 }
 
+// MENU > Show the border: VICE draws the C64's border too (smaller picture).
+static NSString *const kShowBorderKey = @"c64ShowBorder";
+static const char *BorderCrop(BOOL show) { return show ? "disabled" : "maximum"; }
+
 static UIColor *C64Blue(void) { return [UIColor colorWithRed:0x35/255.0 green:0x28/255.0 blue:0x79/255.0 alpha:1]; }
 static UIColor *C64Light(void) { return [UIColor colorWithRed:0x6c/255.0 green:0x5e/255.0 blue:0xb5/255.0 alpha:1]; }
 
@@ -45,6 +49,7 @@ static NSString *AppVersion(void);
    volatile BOOL _resetRequested;
    AudioComponentInstance _audio;
    UILabel *_message;
+   float _laidOutAspect;
 }
 
 - (instancetype)initWithGamePath:(NSString *)path {
@@ -59,7 +64,7 @@ static NSString *AppVersion(void);
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskAllButUpsideDown; }
 
 - (void)viewDidLoad {
    [super viewDidLoad];
@@ -94,13 +99,21 @@ static NSString *AppVersion(void);
    [super viewDidLayoutSubviews];
    CGSize b = self.view.bounds.size;
    UIEdgeInsets s = self.view.safeAreaInsets;
-   // Fit the picture between the cutouts, keeping the C64's shape.
-   CGRect area = CGRectMake(s.left, 0, b.width - s.left - s.right, b.height);
-   float aspect = _started ? fe_aspect() : 4.0f / 3.0f;
+   BOOL landscape = b.width > b.height;
+   // As big as it fits, keeping the C64's shape. Landscape: the full height,
+   // centred between the cutouts. Portrait: the full width, at the top, with
+   // the keys and the thumbs' room below.
+   float aspect = _started ? fe_aspect() : 1.6f;
+   _laidOutAspect = aspect;
+   CGRect area = landscape ? CGRectMake(s.left, 0, b.width - s.left - s.right, b.height)
+                           : CGRectMake(0, s.top, b.width, b.height - s.top - s.bottom);
    CGFloat w = area.size.width, h = w / aspect;
    if (h > area.size.height) { h = area.size.height; w = h * aspect; }
-   _screen.frame = CGRectMake(CGRectGetMidX(area) - w / 2, CGRectGetMidY(area) - h / 2, w, h);
+   CGFloat y = landscape ? CGRectGetMidY(area) - h / 2 : area.origin.y;
+   _screen.frame = CGRectIntegral(CGRectMake(CGRectGetMidX(area) - w / 2, y, w, h));
    _message.frame = CGRectInset(_screen.frame, 24, 24);
+   _overlay.compact = landscape;
+   _overlay.pictureFrame = _screen.frame;
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -116,6 +129,7 @@ static NSString *AppVersion(void);
    unsigned w, h;
    if (!fe_copy_frame(_pixels, &w, &h, &_seq)) return;
    if (!_message.hidden) { _message.hidden = YES; [self.view setNeedsLayout]; }
+   if (fabsf(fe_aspect() - _laidOutAspect) > 0.01f) [self.view setNeedsLayout];   // border on/off
    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
    CGContextRef ctx = CGBitmapContextCreate(_pixels, w, h, 8, w * 4, cs,
                                             kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
@@ -136,6 +150,7 @@ static void *EmuThread(void *arg) {
 
 - (void)runEmulator {
    pthread_setname_np("c64");
+   fe_set_option("vice_crop", BorderCrop([NSUserDefaults.standardUserDefaults boolForKey:kShowBorderKey]));
    if (!fe_start(_path.fileSystemRepresentation)) {
       NSString *err = [NSString stringWithUTF8String:fe_last_error()];
       dispatch_async(dispatch_get_main_queue(), ^{
@@ -227,6 +242,12 @@ static OSStatus AudioRender(void *ref, AudioUnitRenderActionFlags *flags, const 
       preferredStyle:UIAlertControllerStyleAlert];
    [a addAction:[UIAlertAction actionWithTitle:@"Reset the C64" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
       self->_resetRequested = YES;
+   }]];
+   BOOL border = [NSUserDefaults.standardUserDefaults boolForKey:kShowBorderKey];
+   [a addAction:[UIAlertAction actionWithTitle:(border ? @"Hide the border (bigger picture)" : @"Show the border")
+      style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+      [NSUserDefaults.standardUserDefaults setBool:!border forKey:kShowBorderKey];
+      fe_set_option("vice_crop", BorderCrop(!border));
    }]];
    [a addAction:[UIAlertAction actionWithTitle:@"Change game" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
       UIAlertController *b = [UIAlertController alertControllerWithTitle:@"Change game"
