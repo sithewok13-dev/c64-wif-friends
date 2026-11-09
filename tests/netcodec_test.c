@@ -73,9 +73,9 @@ int main(void) {
    CHECK(!nc_input_parse(pkt, m - 1, &seq, &joy, k2, &nk));
    int16_t mono[NC_MAX_AUDIO]; for (int i = 0; i < NC_MAX_AUDIO; i++) mono[i] = (int16_t)(i * 50 - 15000);
    m = nc_audio_packet(5, 48000, mono, NC_MAX_AUDIO, pkt, sizeof(pkt));
-   uint32_t rate; const uint8_t *s; unsigned ns;
+   uint32_t rate = 0; const uint8_t *s = NULL; unsigned ns = 0;
    CHECK(m > 0 && m < 1300 && nc_audio_parse(pkt, m, &seq, &rate, &s, &ns) && rate == 48000 && ns == NC_MAX_AUDIO);
-   CHECK((int16_t)(s[2 * 10] | s[2 * 10 + 1] << 8) == mono[10]);
+   CHECK(s && (int16_t)(s[2 * 10] | s[2 * 10 + 1] << 8) == mono[10]);
    CHECK(nc_type((const uint8_t *)"XYZ", 3) == 0);
    printf(fails ? "%d FAILED\n" : "all netcodec tests passed\n", fails);
    return fails != 0;
