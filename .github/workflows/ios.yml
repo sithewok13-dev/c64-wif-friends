@@ -1,0 +1,39 @@
+name: iOS
+
+# Every push builds the app and puts it on the "ios-latest" test release.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache the VICE core
+        uses: actions/cache@v4
+        with:
+          path: build/libvice.a
+          key: vice-${{ runner.os }}-${{ hashFiles('ios/build.sh') }}
+
+      - name: Build
+        run: VERSION=0.1 BUILD=${{ github.run_number }} ios/build.sh
+
+      - name: Publish ios-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ios-latest -y --cleanup-tag 2>/dev/null || true
+          gh release create ios-latest build/C64wifFriends.ipa \
+            --prerelease --target "${{ github.sha }}" \
+            --title "Test build 0.1.${{ github.run_number }}" \
+            --notes "Test build from ${{ github.ref_name }} at ${GITHUB_SHA::7}. Unsigned: install it the way you install the other ports."
